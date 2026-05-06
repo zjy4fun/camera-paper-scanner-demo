@@ -27,7 +27,7 @@ function loadOpenCV() {
     try {
       importScripts('./opencv.js');
       const maybeCv = self.cv || self.Module;
-      if (maybeCv?.Mat && maybeCv?.matFromImageData) done(maybeCv);
+      if (maybeCv?.Mat) done(maybeCv);
     } catch (error) {
       clearTimeout(timeoutId);
       reject(error);
@@ -185,7 +185,8 @@ function detectDocumentQuadFromImageData(opencv, imageData) {
   let kernel;
 
   try {
-    src = opencv.matFromImageData(imageData);
+    src = new opencv.Mat(imageData.height, imageData.width, opencv.CV_8UC4);
+    src.data.set(imageData.data);
     gray = new opencv.Mat();
     blurred = new opencv.Mat();
     edges = new opencv.Mat();
