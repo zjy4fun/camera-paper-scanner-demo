@@ -17,10 +17,9 @@ npm run dev
 - 切换摄像头时释放旧 MediaStream tracks
 - video 实时预览 + canvas 叠加纸张轮廓
 - OpenCV.js 灰度、模糊、Canny、轮廓查找、四边形近似
-- 截图时对检测到的纸张做透视矫正，生成 JPEG
+- 截图时对检测到的纸张做透视矫正；未检测到纸张时直接保存完整摄像头画面，生成 JPEG
 - 右侧最多保留 20 张截图，支持缩略图和大图弹窗
 
 ## OpenCV.js
 
-默认通过 CDN 加载：`https://docs.opencv.org/4.x/opencv.js`。
-如果要本地化，可以把 opencv.js 放入 `public/opencv.js`，并把 `index.html` 里的 script src 改成 `/opencv.js`。
+当前使用本地文件加载：`public/opencv.js`，会随 GitHub Pages 一起发布，避免第三方 CDN/跨域 403。

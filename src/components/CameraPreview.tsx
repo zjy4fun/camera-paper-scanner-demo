@@ -42,7 +42,7 @@ export function CameraPreview({
           截图
         </button>
         <span className={hasDocument ? 'status ok' : 'status'}>
-          {hasDocument ? '已检测到纸张' : '未检测到纸张'}
+          {hasDocument ? '已检测到纸张，截图将自动矫正' : '未检测到纸张，截图将保存完整画面'}
         </span>
       </div>
 

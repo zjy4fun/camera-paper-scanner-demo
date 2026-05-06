@@ -1,5 +1,5 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
-import { detectDocumentQuad, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
+import { canvasToJpeg, detectDocumentQuad, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
 
 export function useDocumentDetection(
   cv: any | null,
@@ -97,12 +97,12 @@ export function useDocumentDetection(
     };
   }, [copyVideoFrame, cv, drawOverlay, enabled]);
 
-  const captureDocument = useCallback((): CaptureResult | null => {
-    if (!cv || !quadRef.current) return null;
+  const captureImage = useCallback((): CaptureResult | null => {
     const canvas = copyVideoFrame();
     if (!canvas) return null;
-    return warpDocumentToJpeg(cv, canvas, quadRef.current);
+    if (cv && quadRef.current) return warpDocumentToJpeg(cv, canvas, quadRef.current);
+    return canvasToJpeg(canvas);
   }, [copyVideoFrame, cv]);
 
-  return { quad, captureDocument };
+  return { quad, captureImage };
 }

@@ -51,21 +51,12 @@ export default function App() {
     };
   }, []);
 
-  const { quad, captureDocument } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream && cv));
+  const { quad, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream && cv));
 
   function handleCapture() {
     setCaptureError('');
-    if (!cv) {
-      setCaptureError('OpenCV.js 尚未加载完成，请稍后重试');
-      return;
-    }
-    if (!quad) {
-      setCaptureError('未检测到纸张，请调整位置后重试');
-      return;
-    }
-
     try {
-      const result = captureDocument();
+      const result = captureImage();
       if (!result) {
         setCaptureError('截图失败，请确认摄像头画面已正常显示');
         return;
@@ -114,7 +105,7 @@ export default function App() {
           videoRef={videoRef}
           overlayCanvasRef={overlayCanvasRef}
           hasDocument={Boolean(quad)}
-          disabled={!cv}
+          disabled={!stream}
           error={captureError}
           onCapture={handleCapture}
         />

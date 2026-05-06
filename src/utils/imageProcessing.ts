@@ -7,6 +7,15 @@ export type CaptureResult = {
   height: number;
 };
 
+export function canvasToJpeg(sourceCanvas: HTMLCanvasElement, quality = 0.92): CaptureResult {
+  return {
+    dataUrl: sourceCanvas.toDataURL('image/jpeg', quality),
+    width: sourceCanvas.width,
+    height: sourceCanvas.height,
+  };
+}
+
+
 function orderQuadPoints(points: Point[]): Quad {
   const sortedBySum = [...points].sort((a, b) => a.x + a.y - (b.x + b.y));
   const topLeft = sortedBySum[0];
