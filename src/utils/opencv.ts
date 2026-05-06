@@ -1,21 +1,35 @@
 let loadingPromise: Promise<any> | null = null;
 
+function getReadyOpenCV() {
+  const candidates = [(window as any).Module, window.cv];
+  return candidates.find((candidate) => candidate && typeof candidate.Mat === 'function' && candidate.imread && candidate.getPerspectiveTransform);
+}
+
 export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
   if (loadingPromise) return loadingPromise;
 
   loadingPromise = new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    const existing = getReadyOpenCV();
+    if (existing) {
+      resolve(existing);
+      return;
+    }
 
-    const resolveIfReady = () => {
-      const cv = window.cv;
-      if (cv?.Mat && cv?.imread && cv?.getPerspectiveTransform) {
-        resolve(cv);
-        return true;
-      }
-      return false;
+    const previousModule = (window as any).Module ?? {};
+    (window as any).Module = {
+      ...previousModule,
+      onRuntimeInitialized() {
+        previousModule.onRuntimeInitialized?.();
+        const ready = getReadyOpenCV() ?? (window as any).Module;
+        if (ready && typeof ready.Mat === 'function') resolve(ready);
+        else reject(new Error('OpenCV.js 已加载，但 Mat 构造器不可用'));
+      },
+      onAbort(error: unknown) {
+        loadingPromise = null;
+        reject(new Error(`OpenCV.js 加载失败: ${String(error)}`));
+      },
     };
-
-    if (resolveIfReady()) return;
 
     let script = document.getElementById('opencv-script') as HTMLScriptElement | null;
     if (!script) {
@@ -27,7 +41,11 @@ export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
     }
 
     const check = () => {
-      if (resolveIfReady()) return;
+      const ready = getReadyOpenCV();
+      if (ready) {
+        resolve(ready);
+        return;
+      }
 
       if (Date.now() - startedAt > timeoutMs) {
         loadingPromise = null;
@@ -42,15 +60,6 @@ export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
       loadingPromise = null;
       reject(new Error('OpenCV.js 脚本加载失败'));
     }, { once: true });
-
-    const maybeCv = window.cv;
-    if (maybeCv) {
-      const oldRuntimeInitialized = maybeCv.onRuntimeInitialized;
-      maybeCv.onRuntimeInitialized = () => {
-        oldRuntimeInitialized?.();
-        resolve(window.cv);
-      };
-    }
 
     check();
   });

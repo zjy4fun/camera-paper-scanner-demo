@@ -9,6 +9,10 @@ function loadOpenCV() {
     const timeoutId = setTimeout(() => reject(new Error('OpenCV WASM worker 加载超时')), 20000);
 
     function done(instance) {
+      if (!instance || typeof instance.Mat !== 'function') {
+        reject(new Error('OpenCV WASM 已加载，但 Mat 构造器不可用'));
+        return;
+      }
       clearTimeout(timeoutId);
       cvInstance = instance;
       resolve(instance);
@@ -16,7 +20,7 @@ function loadOpenCV() {
 
     self.Module = {
       onRuntimeInitialized() {
-        done(self.cv || self.Module || cv);
+        done(self.Module);
       },
       onAbort(error) {
         clearTimeout(timeoutId);
@@ -26,8 +30,6 @@ function loadOpenCV() {
 
     try {
       importScripts('./opencv.js');
-      const maybeCv = self.cv || self.Module;
-      if (maybeCv?.Mat) done(maybeCv);
     } catch (error) {
       clearTimeout(timeoutId);
       reject(error);
