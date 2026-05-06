@@ -6,31 +6,47 @@ function loadOpenCV() {
   if (cvReadyPromise) return cvReadyPromise;
 
   cvReadyPromise = new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => reject(new Error('OpenCV.js worker 加载超时')), 20000);
+    const startedAt = Date.now();
+    const timeoutMs = 20000;
+    let resolved = false;
 
     function done(instance) {
-      if (!instance || typeof instance.Mat !== 'function') {
-        return;
-      }
-      clearTimeout(timeoutId);
+      if (resolved || !instance || typeof instance.Mat !== 'function') return false;
+      resolved = true;
       cvInstance = instance;
       resolve(instance);
+      return true;
+    }
+
+    function fail(error) {
+      if (resolved) return;
+      resolved = true;
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    function pollReady() {
+      const candidate = self.cv || (typeof cv !== 'undefined' ? cv : null);
+      if (done(candidate)) return;
+      if (Date.now() - startedAt > timeoutMs) {
+        fail(new Error('OpenCV.js worker 加载超时：cv.Mat 不可用'));
+        return;
+      }
+      setTimeout(pollReady, 50);
     }
 
     try {
       importScripts('./opencv.js');
-      const candidate = self.cv || cv;
+      const candidate = self.cv || (typeof cv !== 'undefined' ? cv : null);
       if (candidate) {
         const previousInitialized = candidate.onRuntimeInitialized;
         candidate.onRuntimeInitialized = () => {
           previousInitialized?.();
           done(candidate);
         };
-        done(candidate);
       }
+      pollReady();
     } catch (error) {
-      clearTimeout(timeoutId);
-      reject(error);
+      fail(error);
     }
   });
 
