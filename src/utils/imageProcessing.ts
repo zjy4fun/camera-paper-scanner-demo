@@ -50,7 +50,7 @@ export function detectDocumentQuad(cv: any, sourceCanvas: HTMLCanvasElement): Qu
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
     cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
     cv.Canny(blurred, edges, 75, 200);
-    cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
     const imageArea = sourceCanvas.width * sourceCanvas.height;
     let best: { area: number; points: Point[] } | null = null;
