@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { CameraSelector } from './components/CameraSelector';
 import { CameraPreview } from './components/CameraPreview';
 import { CaptureList } from './components/CaptureList';
@@ -37,26 +37,27 @@ export default function App() {
 
   const { stream, error: streamError } = useCameraStream(selectedDeviceId);
 
-  useEffect(() => {
-    let cancelled = false;
-    waitForOpenCVReady()
-      .then((readyCv) => {
-        if (!cancelled) setCv(readyCv);
-      })
-      .catch((err) => {
-        if (!cancelled) setOpenCvError(err instanceof Error ? err.message : 'OpenCV.js 加载失败');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { quad, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream));
 
-  const { quad, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream && cv));
-
-  function handleCapture() {
+  async function handleCapture() {
     setCaptureError('');
+    setOpenCvError('');
+
+    let captureCv = cv;
+    if (quad && !captureCv) {
+      try {
+        captureCv = await waitForOpenCVReady();
+        setCv(captureCv);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'OpenCV.js 加载失败';
+        setOpenCvError(message);
+        setCaptureError(message);
+        return;
+      }
+    }
+
     try {
-      const result = captureImage();
+      const result = captureImage(captureCv);
       if (!result) {
         setCaptureError('截图失败，请确认摄像头画面已正常显示');
         return;
@@ -97,7 +98,6 @@ export default function App() {
       </header>
 
       {mainError && <div className="alert">{mainError}</div>}
-      {!opencvError && !cv && <div className="notice">OpenCV.js 加载中...</div>}
 
       <div className="content-grid">
         <CameraPreview

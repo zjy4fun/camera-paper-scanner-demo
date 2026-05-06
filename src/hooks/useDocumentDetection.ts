@@ -182,10 +182,10 @@ export function useDocumentDetection(
     };
   }, [copyDetectionImageData, drawOverlay, enabled]);
 
-  const captureImage = useCallback((): CaptureResult | null => {
+  const captureImage = useCallback((captureCv = cv): CaptureResult | null => {
     const canvas = copyFullVideoFrame();
     if (!canvas) return null;
-    if (cv && quadRef.current) return warpDocumentToJpeg(cv, canvas, quadRef.current);
+    if (captureCv && quadRef.current) return warpDocumentToJpeg(captureCv, canvas, quadRef.current);
     return canvasToJpeg(canvas);
   }, [copyFullVideoFrame, cv]);
 

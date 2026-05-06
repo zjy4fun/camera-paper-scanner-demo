@@ -1,30 +1,52 @@
+let loadingPromise: Promise<any> | null = null;
+
 export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
-  return new Promise((resolve, reject) => {
+  if (loadingPromise) return loadingPromise;
+
+  loadingPromise = new Promise((resolve, reject) => {
     const startedAt = Date.now();
 
-    const check = () => {
+    const resolveIfReady = () => {
       const cv = window.cv;
       if (cv?.Mat && cv?.imread && cv?.getPerspectiveTransform) {
         resolve(cv);
-        return;
+        return true;
       }
+      return false;
+    };
+
+    if (resolveIfReady()) return;
+
+    let script = document.getElementById('opencv-script') as HTMLScriptElement | null;
+    if (!script) {
+      script = document.createElement('script');
+      script.id = 'opencv-script';
+      script.async = true;
+      script.src = `${import.meta.env.BASE_URL}opencv.js`;
+      document.head.appendChild(script);
+    }
+
+    const check = () => {
+      if (resolveIfReady()) return;
 
       if (Date.now() - startedAt > timeoutMs) {
-        reject(new Error('OpenCV.js 加载失败，请检查网络或改用本地 public/opencv.js'));
+        loadingPromise = null;
+        reject(new Error('OpenCV.js 加载失败，请检查 public/opencv.js 是否可访问'));
         return;
       }
 
       window.setTimeout(check, 100);
     };
 
-    const script = document.getElementById('opencv-script') as HTMLScriptElement | null;
-    script?.addEventListener('error', () => {
+    script.addEventListener('error', () => {
+      loadingPromise = null;
       reject(new Error('OpenCV.js 脚本加载失败'));
     }, { once: true });
 
-    if (window.cv) {
-      const oldRuntimeInitialized = window.cv.onRuntimeInitialized;
-      window.cv.onRuntimeInitialized = () => {
+    const maybeCv = window.cv;
+    if (maybeCv) {
+      const oldRuntimeInitialized = maybeCv.onRuntimeInitialized;
+      maybeCv.onRuntimeInitialized = () => {
         oldRuntimeInitialized?.();
         resolve(window.cv);
       };
@@ -32,4 +54,6 @@ export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
 
     check();
   });
+
+  return loadingPromise;
 }
