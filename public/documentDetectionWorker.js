@@ -16,7 +16,7 @@ function loadOpenCV() {
 
     self.Module = {
       onRuntimeInitialized() {
-        done(self.Module || self.cv || cv);
+        done(self.cv || self.Module || cv);
       },
       onAbort(error) {
         clearTimeout(timeoutId);
@@ -45,49 +45,107 @@ function orderQuadPoints(points) {
   return [topLeft, remaining[1], bottomRight, remaining[0]];
 }
 
+function pointsFromMat(mat) {
+  const points = [];
+  for (let row = 0; row < mat.rows; row += 1) {
+    points.push({ x: mat.intPtr(row, 0)[0], y: mat.intPtr(row, 0)[1] });
+  }
+  return points;
+}
+
+function addCandidate(opencv, candidate, best, imageArea) {
+  const area = Math.abs(opencv.contourArea(candidate));
+  if (area < imageArea * 0.025) return best;
+  if (!opencv.isContourConvex(candidate)) return best;
+  const points = pointsFromMat(candidate);
+  if (points.length !== 4) return best;
+  if (!best || area > best.area) return { area, points };
+  return best;
+}
+
+function detectFromEdges(opencv, edges, imageArea) {
+  const contours = new opencv.MatVector();
+  const hierarchy = new opencv.Mat();
+  let best = null;
+
+  try {
+    opencv.findContours(edges, contours, hierarchy, opencv.RETR_LIST, opencv.CHAIN_APPROX_SIMPLE);
+
+    for (let i = 0; i < contours.size(); i += 1) {
+      const contour = contours.get(i);
+      let approx = null;
+      let rectPointsMat = null;
+
+      try {
+        const contourArea = Math.abs(opencv.contourArea(contour));
+        if (contourArea < imageArea * 0.02) continue;
+
+        const perimeter = opencv.arcLength(contour, true);
+        for (const epsilon of [0.015, 0.02, 0.03, 0.045, 0.06]) {
+          approx = new opencv.Mat();
+          opencv.approxPolyDP(contour, approx, epsilon * perimeter, true);
+          if (approx.rows === 4) {
+            best = addCandidate(opencv, approx, best, imageArea);
+            approx.delete();
+            approx = null;
+            break;
+          }
+          approx.delete();
+          approx = null;
+        }
+
+        if (!best && contourArea > imageArea * 0.08) {
+          const rotatedRect = opencv.minAreaRect(contour);
+          const points = opencv.RotatedRect.points(rotatedRect);
+          rectPointsMat = opencv.matFromArray(4, 1, opencv.CV_32SC2, [
+            Math.round(points[0].x), Math.round(points[0].y),
+            Math.round(points[1].x), Math.round(points[1].y),
+            Math.round(points[2].x), Math.round(points[2].y),
+            Math.round(points[3].x), Math.round(points[3].y),
+          ]);
+          best = addCandidate(opencv, rectPointsMat, best, imageArea);
+        }
+      } finally {
+        approx?.delete?.();
+        rectPointsMat?.delete?.();
+        contour.delete();
+      }
+    }
+  } finally {
+    contours.delete();
+    hierarchy.delete();
+  }
+
+  return best;
+}
+
 function detectDocumentQuadFromImageData(opencv, imageData) {
   let src;
   let gray;
   let blurred;
   let edges;
-  let contours;
-  let hierarchy;
-  let approx;
+  let kernel;
 
   try {
     src = opencv.matFromImageData(imageData);
     gray = new opencv.Mat();
     blurred = new opencv.Mat();
     edges = new opencv.Mat();
-    contours = new opencv.MatVector();
-    hierarchy = new opencv.Mat();
+    kernel = opencv.Mat.ones(3, 3, opencv.CV_8U);
 
     opencv.cvtColor(src, gray, opencv.COLOR_RGBA2GRAY, 0);
     opencv.GaussianBlur(gray, blurred, new opencv.Size(5, 5), 0);
-    opencv.Canny(blurred, edges, 75, 200);
-    opencv.findContours(edges, contours, hierarchy, opencv.RETR_EXTERNAL, opencv.CHAIN_APPROX_SIMPLE);
 
     const imageArea = imageData.width * imageData.height;
     let best = null;
 
-    for (let i = 0; i < contours.size(); i += 1) {
-      const contour = contours.get(i);
-      approx = new opencv.Mat();
-      const perimeter = opencv.arcLength(contour, true);
-      opencv.approxPolyDP(contour, approx, 0.02 * perimeter, true);
-      const area = Math.abs(opencv.contourArea(approx));
-
-      if (approx.rows === 4 && area > imageArea * 0.08 && opencv.isContourConvex(approx)) {
-        const points = [];
-        for (let row = 0; row < 4; row += 1) {
-          points.push({ x: approx.intPtr(row, 0)[0], y: approx.intPtr(row, 0)[1] });
-        }
-        if (!best || area > best.area) best = { area, points };
-      }
-
-      approx.delete();
-      contour.delete();
-      approx = null;
+    for (const [low, high] of [[40, 120], [60, 160], [80, 220]]) {
+      opencv.Canny(blurred, edges, low, high);
+      opencv.morphologyEx(edges, edges, opencv.MORPH_CLOSE, kernel);
+      opencv.dilate(edges, edges, kernel);
+      const candidate = detectFromEdges(opencv, edges, imageArea);
+      if (candidate && (!best || candidate.area > best.area)) best = candidate;
+      if (best && best.area > imageArea * 0.18) break;
     }
 
     return best ? orderQuadPoints(best.points) : null;
@@ -96,9 +154,7 @@ function detectDocumentQuadFromImageData(opencv, imageData) {
     gray?.delete();
     blurred?.delete();
     edges?.delete();
-    contours?.delete();
-    hierarchy?.delete();
-    approx?.delete?.();
+    kernel?.delete();
   }
 }
 

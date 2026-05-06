@@ -2,7 +2,7 @@ import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { canvasToJpeg, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
 
 const DETECTION_INTERVAL_MS = 500;
-const DETECTION_MAX_WIDTH = 480;
+const DETECTION_MAX_WIDTH = 640;
 
 type WorkerMessage =
   | { type: 'ready' }
