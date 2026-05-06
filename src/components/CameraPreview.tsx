@@ -5,6 +5,8 @@ type Props = {
   videoRef: RefObject<HTMLVideoElement | null>;
   overlayCanvasRef: RefObject<HTMLCanvasElement | null>;
   hasDocument: boolean;
+  detectionStatus: string;
+  debugText: string;
   disabled: boolean;
   error: string;
   onCapture: () => void;
@@ -15,6 +17,8 @@ export function CameraPreview({
   videoRef,
   overlayCanvasRef,
   hasDocument,
+  detectionStatus,
+  debugText,
   disabled,
   error,
   onCapture,
@@ -44,6 +48,7 @@ export function CameraPreview({
         <span className={hasDocument ? 'status ok' : 'status'}>
           {hasDocument ? '已检测到纸张，截图将自动矫正' : '未检测到纸张，截图将保存完整画面'}
         </span>
+        <span className={`detect-debug ${detectionStatus}`}>{debugText}</span>
       </div>
 
       {error && <p className="error-text">{error}</p>}

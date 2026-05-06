@@ -4,9 +4,11 @@ import { canvasToJpeg, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/
 const DETECTION_INTERVAL_MS = 500;
 const DETECTION_MAX_WIDTH = 640;
 
+type DetectionStatus = 'idle' | 'loading' | 'ready' | 'detecting' | 'found' | 'not-found' | 'error';
+
 type WorkerMessage =
   | { type: 'ready' }
-  | { type: 'result'; id: number; quad: Quad | null; durationMs: number }
+  | { type: 'result'; id: number; quad: Quad | null; durationMs: number; source?: string }
   | { type: 'error'; id?: number; message: string };
 
 export function useDocumentDetection(
@@ -21,6 +23,8 @@ export function useDocumentDetection(
   const pendingRef = useRef(false);
   const requestIdRef = useRef(0);
   const [quad, setQuad] = useState<Quad | null>(null);
+  const [status, setStatus] = useState<DetectionStatus>('idle');
+  const [debugText, setDebugText] = useState('等待摄像头');
   const quadRef = useRef<Quad | null>(null);
 
   const drawOverlay = useCallback((detectedQuad: Quad | null) => {
@@ -45,16 +49,22 @@ export function useDocumentDetection(
 
     if (!detectedQuad) return;
 
-    const scaleX = rect.width / video.videoWidth;
-    const scaleY = rect.height / video.videoHeight;
+    const videoAspect = video.videoWidth / video.videoHeight;
+    const rectAspect = rect.width / rect.height;
+    const contentWidth = rectAspect > videoAspect ? rect.height * videoAspect : rect.width;
+    const contentHeight = rectAspect > videoAspect ? rect.height : rect.width / videoAspect;
+    const offsetX = (rect.width - contentWidth) / 2;
+    const offsetY = (rect.height - contentHeight) / 2;
+    const scaleX = contentWidth / video.videoWidth;
+    const scaleY = contentHeight / video.videoHeight;
     ctx.strokeStyle = '#00d084';
     ctx.lineWidth = 4;
     ctx.shadowColor = 'rgba(0, 208, 132, 0.45)';
     ctx.shadowBlur = 8;
     ctx.beginPath();
     detectedQuad.forEach((point, index) => {
-      const x = point.x * scaleX;
-      const y = point.y * scaleY;
+      const x = offsetX + point.x * scaleX;
+      const y = offsetY + point.y * scaleY;
       if (index === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -99,6 +109,8 @@ export function useDocumentDetection(
   useEffect(() => {
     if (!enabled) {
       setQuad(null);
+      setStatus('idle');
+      setDebugText('等待摄像头');
       quadRef.current = null;
       drawOverlay(null);
       return;
@@ -106,6 +118,8 @@ export function useDocumentDetection(
 
     let stopped = false;
     let timeoutId = 0;
+    setStatus('loading');
+    setDebugText('检测 Worker 加载中');
     const worker = new Worker(`${import.meta.env.BASE_URL}documentDetectionWorker.js`);
     workerRef.current = worker;
 
@@ -129,6 +143,8 @@ export function useDocumentDetection(
       const id = requestIdRef.current + 1;
       requestIdRef.current = id;
       pendingRef.current = true;
+      setStatus('detecting');
+      setDebugText(`检测中 #${id}`);
       worker.postMessage(
         { type: 'detect', id, imageData: frame.imageData, scale: frame.scale },
         [frame.imageData.data.buffer],
@@ -138,6 +154,8 @@ export function useDocumentDetection(
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
       if (message.type === 'ready') {
+        setStatus('ready');
+        setDebugText('检测 Worker 已就绪');
         scheduleNext(100);
         return;
       }
@@ -147,6 +165,8 @@ export function useDocumentDetection(
         if (message.id !== requestIdRef.current) return;
         quadRef.current = message.quad;
         setQuad(message.quad);
+        setStatus(message.quad ? 'found' : 'not-found');
+        setDebugText(message.quad ? `检测到纸张，耗时 ${message.durationMs}ms` : `未找到候选，耗时 ${message.durationMs}ms`);
         window.requestAnimationFrame(() => drawOverlay(message.quad));
         scheduleNext(Math.max(DETECTION_INTERVAL_MS, message.durationMs * 2));
         return;
@@ -155,6 +175,8 @@ export function useDocumentDetection(
       if (message.type === 'error') {
         pendingRef.current = false;
         console.error('Document detection worker failed:', message.message);
+        setStatus('error');
+        setDebugText(message.message);
         quadRef.current = null;
         setQuad(null);
         window.requestAnimationFrame(() => drawOverlay(null));
@@ -165,6 +187,8 @@ export function useDocumentDetection(
     worker.onerror = (event) => {
       pendingRef.current = false;
       console.error('Document detection worker error:', event.message);
+      setStatus('error');
+      setDebugText(event.message);
       scheduleNext(1200);
     };
 
@@ -189,5 +213,5 @@ export function useDocumentDetection(
     return canvasToJpeg(canvas);
   }, [copyFullVideoFrame, cv]);
 
-  return { quad, captureImage };
+  return { quad, status, debugText, captureImage };
 }

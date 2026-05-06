@@ -199,3 +199,15 @@ button.secondary:hover:not(:disabled) { background: #e2e8f0; }
   .camera-selector { grid-template-columns: 1fr; }
   .preview-actions { align-items: stretch; flex-direction: column; }
 }
+.detect-debug {
+  margin-left: auto;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 600;
+}
+.detect-debug.found { color: #027a48; }
+.detect-debug.error { color: #b42318; }
+.detect-debug.detecting { color: #175cd3; }
+@media (max-width: 620px) {
+  .detect-debug { margin-left: 0; }
+}

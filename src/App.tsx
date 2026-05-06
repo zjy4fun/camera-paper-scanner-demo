@@ -37,7 +37,7 @@ export default function App() {
 
   const { stream, error: streamError } = useCameraStream(selectedDeviceId);
 
-  const { quad, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream));
+  const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream));
 
   async function handleCapture() {
     setCaptureError('');
@@ -105,6 +105,8 @@ export default function App() {
           videoRef={videoRef}
           overlayCanvasRef={overlayCanvasRef}
           hasDocument={Boolean(quad)}
+          detectionStatus={detectionStatus}
+          debugText={debugText}
           disabled={!stream}
           error={captureError}
           onCapture={handleCapture}

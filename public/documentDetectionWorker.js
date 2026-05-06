@@ -119,6 +119,64 @@ function detectFromEdges(opencv, edges, imageArea) {
   return best;
 }
 
+
+function fallbackBrightDocumentQuad(imageData) {
+  const { width, height, data } = imageData;
+  const step = 4;
+  const marginX = Math.round(width * 0.02);
+  const marginY = Math.round(height * 0.02);
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  let count = 0;
+
+  for (let y = marginY; y < height - marginY; y += step) {
+    for (let x = marginX; x < width - marginX; x += step) {
+      const idx = (y * width + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const brightness = (r + g + b) / 3;
+      const saturation = max - min;
+
+      // White paper is usually bright and low-saturation. Keep this permissive for demo use.
+      if (brightness > 145 && saturation < 80) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        count += 1;
+      }
+    }
+  }
+
+  const sampled = Math.max(1, Math.floor((width / step) * (height / step)));
+  const coverage = count / sampled;
+  const boxWidth = maxX - minX;
+  const boxHeight = maxY - minY;
+  const area = boxWidth * boxHeight;
+
+  if (coverage < 0.015 || area < width * height * 0.04 || boxWidth < width * 0.15 || boxHeight < height * 0.15) {
+    return null;
+  }
+
+  const pad = Math.round(Math.min(width, height) * 0.015);
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(width - 1, maxX + pad);
+  maxY = Math.min(height - 1, maxY + pad);
+
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+}
+
 function detectDocumentQuadFromImageData(opencv, imageData) {
   let src;
   let gray;
@@ -148,7 +206,7 @@ function detectDocumentQuadFromImageData(opencv, imageData) {
       if (best && best.area > imageArea * 0.18) break;
     }
 
-    return best ? orderQuadPoints(best.points) : null;
+    return best ? orderQuadPoints(best.points) : fallbackBrightDocumentQuad(imageData);
   } finally {
     src?.delete();
     gray?.delete();
@@ -165,7 +223,7 @@ self.onmessage = async (event) => {
   const startedAt = performance.now();
   try {
     const opencv = cvInstance || await loadOpenCV();
-    const smallQuad = detectDocumentQuadFromImageData(opencv, imageData);
+    const smallQuad = detectDocumentQuadFromImageData(opencv, imageData) || fallbackBrightDocumentQuad(imageData);
     const quad = smallQuad
       ? smallQuad.map((point) => ({ x: point.x / scale, y: point.y / scale }))
       : null;
@@ -175,6 +233,7 @@ self.onmessage = async (event) => {
       id,
       quad,
       durationMs: Math.round(performance.now() - startedAt),
+      source: smallQuad ? 'detected' : 'none',
     });
   } catch (error) {
     self.postMessage({
