@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { CameraSelector } from './components/CameraSelector';
 import { CameraPreview } from './components/CameraPreview';
 import { CaptureList } from './components/CaptureList';
@@ -6,7 +6,6 @@ import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { useCameraDevices } from './hooks/useCameraDevices';
 import { useCameraStream } from './hooks/useCameraStream';
 import { useDocumentDetection } from './hooks/useDocumentDetection';
-import { waitForOpenCVReady } from './utils/opencv';
 import './styles.css';
 
 export type CapturedImage = {
@@ -20,8 +19,6 @@ export type CapturedImage = {
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [cv, setCv] = useState<any | null>(null);
-  const [opencvError, setOpenCvError] = useState('');
   const [captureError, setCaptureError] = useState('');
   const [images, setImages] = useState<CapturedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<CapturedImage | null>(null);
@@ -36,44 +33,13 @@ export default function App() {
   } = useCameraDevices();
 
   const { stream, error: streamError } = useCameraStream(selectedDeviceId);
+  const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(videoRef, overlayCanvasRef, Boolean(stream));
 
-  useEffect(() => {
-    if (!stream || cv) return;
-    let cancelled = false;
-    setOpenCvError('');
-    waitForOpenCVReady()
-      .then((readyCv) => {
-        if (!cancelled) setCv(readyCv);
-      })
-      .catch((err) => {
-        if (!cancelled) setOpenCvError(err instanceof Error ? err.message : 'OpenCV.js 加载失败');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cv, stream]);
-
-  const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream));
-
-  async function handleCapture() {
+  function handleCapture() {
     setCaptureError('');
-    setOpenCvError('');
-
-    let captureCv = cv;
-    if (quad && !captureCv) {
-      try {
-        captureCv = await waitForOpenCVReady();
-        setCv(captureCv);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'OpenCV.js 加载失败';
-        setOpenCvError(message);
-        setCaptureError(message);
-        return;
-      }
-    }
 
     try {
-      const result = captureImage(captureCv);
+      const result = captureImage();
       if (!result) {
         setCaptureError('截图失败，请确认摄像头画面已正常显示');
         return;
@@ -94,14 +60,14 @@ export default function App() {
     }
   }
 
-  const mainError = opencvError || devicesError || streamError;
+  const mainError = devicesError || streamError;
 
   return (
     <main className="app">
       <header className="app-header">
         <div>
           <h1>摄像头纸张扫描 Demo</h1>
-          <p>实时预览、纸张边缘检测、透视矫正截图。</p>
+          <p>实时预览、轻量纸张区域检测、截图生成图片列表。</p>
         </div>
         <CameraSelector
           devices={devices}

@@ -30,6 +30,29 @@ function distance(a: Point, b: Point) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+export function cropQuadBoundingBoxToJpeg(sourceCanvas: HTMLCanvasElement, quad: Quad, quality = 0.92): CaptureResult {
+  const xs = quad.map((point) => point.x);
+  const ys = quad.map((point) => point.y);
+  const sx = Math.max(0, Math.floor(Math.min(...xs)));
+  const sy = Math.max(0, Math.floor(Math.min(...ys)));
+  const ex = Math.min(sourceCanvas.width, Math.ceil(Math.max(...xs)));
+  const ey = Math.min(sourceCanvas.height, Math.ceil(Math.max(...ys)));
+  const width = Math.max(1, ex - sx);
+  const height = Math.max(1, ey - sy);
+
+  const outputCanvas = document.createElement('canvas');
+  outputCanvas.width = width;
+  outputCanvas.height = height;
+  const ctx = outputCanvas.getContext('2d');
+  if (!ctx) return canvasToJpeg(sourceCanvas, quality);
+  ctx.drawImage(sourceCanvas, sx, sy, width, height, 0, 0, width, height);
+  return {
+    dataUrl: outputCanvas.toDataURL('image/jpeg', quality),
+    width,
+    height,
+  };
+}
+
 export function detectDocumentQuad(cv: any, sourceCanvas: HTMLCanvasElement): Quad | null {
   let src: any;
   let gray: any;
