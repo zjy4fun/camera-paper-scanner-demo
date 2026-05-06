@@ -6,11 +6,10 @@ function loadOpenCV() {
   if (cvReadyPromise) return cvReadyPromise;
 
   cvReadyPromise = new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => reject(new Error('OpenCV WASM worker 加载超时')), 20000);
+    const timeoutId = setTimeout(() => reject(new Error('OpenCV.js worker 加载超时')), 20000);
 
     function done(instance) {
       if (!instance || typeof instance.Mat !== 'function') {
-        reject(new Error('OpenCV WASM 已加载，但 Mat 构造器不可用'));
         return;
       }
       clearTimeout(timeoutId);
@@ -18,18 +17,17 @@ function loadOpenCV() {
       resolve(instance);
     }
 
-    self.Module = {
-      onRuntimeInitialized() {
-        done(self.Module);
-      },
-      onAbort(error) {
-        clearTimeout(timeoutId);
-        reject(new Error(`OpenCV WASM worker 加载失败: ${error}`));
-      },
-    };
-
     try {
       importScripts('./opencv.js');
+      const candidate = self.cv || cv;
+      if (candidate) {
+        const previousInitialized = candidate.onRuntimeInitialized;
+        candidate.onRuntimeInitialized = () => {
+          previousInitialized?.();
+          done(candidate);
+        };
+        done(candidate);
+      }
     } catch (error) {
       clearTimeout(timeoutId);
       reject(error);

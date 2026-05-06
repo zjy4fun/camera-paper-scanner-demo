@@ -1,8 +1,8 @@
 let loadingPromise: Promise<any> | null = null;
 
 function getReadyOpenCV() {
-  const candidates = [(window as any).Module, window.cv];
-  return candidates.find((candidate) => candidate && typeof candidate.Mat === 'function' && candidate.imread && candidate.getPerspectiveTransform);
+  const cv = window.cv;
+  return cv && typeof cv.Mat === 'function' && cv.imread && cv.getPerspectiveTransform ? cv : null;
 }
 
 export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
@@ -16,21 +16,6 @@ export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
       return;
     }
 
-    const previousModule = (window as any).Module ?? {};
-    (window as any).Module = {
-      ...previousModule,
-      onRuntimeInitialized() {
-        previousModule.onRuntimeInitialized?.();
-        const ready = getReadyOpenCV() ?? (window as any).Module;
-        if (ready && typeof ready.Mat === 'function') resolve(ready);
-        else reject(new Error('OpenCV.js 已加载，但 Mat 构造器不可用'));
-      },
-      onAbort(error: unknown) {
-        loadingPromise = null;
-        reject(new Error(`OpenCV.js 加载失败: ${String(error)}`));
-      },
-    };
-
     let script = document.getElementById('opencv-script') as HTMLScriptElement | null;
     if (!script) {
       script = document.createElement('script');
@@ -40,12 +25,25 @@ export function waitForOpenCVReady(timeoutMs = 20_000): Promise<any> {
       document.head.appendChild(script);
     }
 
+    const attachRuntimeHook = () => {
+      const cv = window.cv;
+      if (!cv) return;
+      const previousInitialized = cv.onRuntimeInitialized;
+      cv.onRuntimeInitialized = () => {
+        previousInitialized?.();
+        const ready = getReadyOpenCV();
+        if (ready) resolve(ready);
+      };
+    };
+
     const check = () => {
       const ready = getReadyOpenCV();
       if (ready) {
         resolve(ready);
         return;
       }
+
+      attachRuntimeHook();
 
       if (Date.now() - startedAt > timeoutMs) {
         loadingPromise = null;
