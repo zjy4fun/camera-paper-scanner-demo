@@ -1,15 +1,14 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
-import { canvasToJpeg, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
+import { canvasToJpeg, detectDocumentQuad, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
 
-const DETECTION_INTERVAL_MS = 500;
+const DETECTION_INTERVAL_MS = 800;
 const DETECTION_MAX_WIDTH = 640;
 
 type DetectionStatus = 'idle' | 'loading' | 'ready' | 'detecting' | 'found' | 'not-found' | 'error';
 
-type WorkerMessage =
-  | { type: 'ready' }
-  | { type: 'result'; id: number; quad: Quad | null; durationMs: number; source?: string }
-  | { type: 'error'; id?: number; message: string };
+function scaleQuad(quad: Quad, scale: number): Quad {
+  return quad.map((point) => ({ x: point.x / scale, y: point.y / scale })) as Quad;
+}
 
 export function useDocumentDetection(
   cv: any | null,
@@ -19,9 +18,7 @@ export function useDocumentDetection(
 ) {
   const fullFrameCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
   const detectionCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  const workerRef = useRef<Worker | null>(null);
-  const pendingRef = useRef(false);
-  const requestIdRef = useRef(0);
+  const runningRef = useRef(false);
   const [quad, setQuad] = useState<Quad | null>(null);
   const [status, setStatus] = useState<DetectionStatus>('idle');
   const [debugText, setDebugText] = useState('等待摄像头');
@@ -57,6 +54,7 @@ export function useDocumentDetection(
     const offsetY = (rect.height - contentHeight) / 2;
     const scaleX = contentWidth / video.videoWidth;
     const scaleY = contentHeight / video.videoHeight;
+
     ctx.strokeStyle = '#00d084';
     ctx.lineWidth = 4;
     ctx.shadowColor = 'rgba(0, 208, 132, 0.45)';
@@ -87,7 +85,7 @@ export function useDocumentDetection(
     return canvas;
   }, [videoRef]);
 
-  const copyDetectionImageData = useCallback(() => {
+  const copyDetectionFrame = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
       return null;
@@ -103,7 +101,7 @@ export function useDocumentDetection(
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, width, height);
-    return { imageData: ctx.getImageData(0, 0, width, height), scale };
+    return { canvas, scale };
   }, [videoRef]);
 
   useEffect(() => {
@@ -116,82 +114,76 @@ export function useDocumentDetection(
       return;
     }
 
+    if (!cv) {
+      setQuad(null);
+      setStatus('loading');
+      setDebugText('OpenCV.js 加载中');
+      quadRef.current = null;
+      drawOverlay(null);
+      return;
+    }
+
     let stopped = false;
     let timeoutId = 0;
-    setStatus('loading');
-    setDebugText('检测 Worker 加载中');
-    const worker = new Worker(`${import.meta.env.BASE_URL}documentDetectionWorker.js`);
-    workerRef.current = worker;
+    setStatus('ready');
+    setDebugText('OpenCV.js 已就绪');
 
     const scheduleNext = (delay = DETECTION_INTERVAL_MS) => {
       window.clearTimeout(timeoutId);
-      if (!stopped) timeoutId = window.setTimeout(sendFrameToWorker, delay);
+      if (!stopped) timeoutId = window.setTimeout(runDetection, delay);
     };
 
-    const sendFrameToWorker = () => {
-      if (stopped || pendingRef.current) {
+    const runDetection = () => {
+      if (stopped || runningRef.current) {
         scheduleNext(DETECTION_INTERVAL_MS);
         return;
       }
 
-      const frame = copyDetectionImageData();
-      if (!frame) {
-        scheduleNext(DETECTION_INTERVAL_MS);
-        return;
-      }
-
-      const id = requestIdRef.current + 1;
-      requestIdRef.current = id;
-      pendingRef.current = true;
+      runningRef.current = true;
+      const startedAt = performance.now();
       setStatus('detecting');
-      setDebugText(`检测中 #${id}`);
-      worker.postMessage(
-        { type: 'detect', id, imageData: frame.imageData, scale: frame.scale },
-        [frame.imageData.data.buffer],
-      );
+      setDebugText('检测中');
+
+      const execute = () => {
+        try {
+          const frame = copyDetectionFrame();
+          if (!frame) {
+            scheduleNext(DETECTION_INTERVAL_MS);
+            return;
+          }
+
+          const smallQuad = detectDocumentQuad(cv, frame.canvas);
+          const detected = smallQuad ? scaleQuad(smallQuad, frame.scale) : null;
+          const durationMs = Math.round(performance.now() - startedAt);
+          quadRef.current = detected;
+          setQuad(detected);
+          setStatus(detected ? 'found' : 'not-found');
+          setDebugText(detected ? `检测到纸张，耗时 ${durationMs}ms` : `未找到候选，耗时 ${durationMs}ms`);
+          window.requestAnimationFrame(() => drawOverlay(detected));
+          scheduleNext(Math.max(DETECTION_INTERVAL_MS, durationMs * 2));
+        } catch (err) {
+          const message = err instanceof Error ? err.message : '纸张检测失败';
+          console.error('Document detection failed:', err);
+          quadRef.current = null;
+          setQuad(null);
+          setStatus('error');
+          setDebugText(message);
+          window.requestAnimationFrame(() => drawOverlay(null));
+          scheduleNext(1200);
+        } finally {
+          runningRef.current = false;
+        }
+      };
+
+      const requestIdle = (window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number }).requestIdleCallback;
+      if (requestIdle) {
+        requestIdle(execute, { timeout: 500 });
+      } else {
+        globalThis.setTimeout(execute, 0);
+      }
     };
 
-    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
-      const message = event.data;
-      if (message.type === 'ready') {
-        setStatus('ready');
-        setDebugText('检测 Worker 已就绪');
-        scheduleNext(100);
-        return;
-      }
-
-      if (message.type === 'result') {
-        pendingRef.current = false;
-        if (message.id !== requestIdRef.current) return;
-        quadRef.current = message.quad;
-        setQuad(message.quad);
-        setStatus(message.quad ? 'found' : 'not-found');
-        setDebugText(message.quad ? `检测到纸张，耗时 ${message.durationMs}ms` : `未找到候选，耗时 ${message.durationMs}ms`);
-        window.requestAnimationFrame(() => drawOverlay(message.quad));
-        scheduleNext(Math.max(DETECTION_INTERVAL_MS, message.durationMs * 2));
-        return;
-      }
-
-      if (message.type === 'error') {
-        pendingRef.current = false;
-        console.error('Document detection worker failed:', message.message);
-        setStatus('error');
-        setDebugText(message.message);
-        quadRef.current = null;
-        setQuad(null);
-        window.requestAnimationFrame(() => drawOverlay(null));
-        scheduleNext(1200);
-      }
-    };
-
-    worker.onerror = (event) => {
-      pendingRef.current = false;
-      console.error('Document detection worker error:', event.message);
-      setStatus('error');
-      setDebugText(event.message);
-      scheduleNext(1200);
-    };
-
+    scheduleNext(200);
     const handleResize = () => window.requestAnimationFrame(() => drawOverlay(quadRef.current));
     window.addEventListener('resize', handleResize);
 
@@ -199,12 +191,10 @@ export function useDocumentDetection(
       stopped = true;
       window.clearTimeout(timeoutId);
       window.removeEventListener('resize', handleResize);
-      pendingRef.current = false;
-      worker.terminate();
-      if (workerRef.current === worker) workerRef.current = null;
+      runningRef.current = false;
       drawOverlay(null);
     };
-  }, [copyDetectionImageData, drawOverlay, enabled]);
+  }, [copyDetectionFrame, cv, drawOverlay, enabled]);
 
   const captureImage = useCallback((captureCv = cv): CaptureResult | null => {
     const canvas = copyFullVideoFrame();

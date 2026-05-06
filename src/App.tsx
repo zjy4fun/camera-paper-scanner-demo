@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CameraSelector } from './components/CameraSelector';
 import { CameraPreview } from './components/CameraPreview';
 import { CaptureList } from './components/CaptureList';
@@ -36,6 +36,22 @@ export default function App() {
   } = useCameraDevices();
 
   const { stream, error: streamError } = useCameraStream(selectedDeviceId);
+
+  useEffect(() => {
+    if (!stream || cv) return;
+    let cancelled = false;
+    setOpenCvError('');
+    waitForOpenCVReady()
+      .then((readyCv) => {
+        if (!cancelled) setCv(readyCv);
+      })
+      .catch((err) => {
+        if (!cancelled) setOpenCvError(err instanceof Error ? err.message : 'OpenCV.js 加载失败');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cv, stream]);
 
   const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(cv, videoRef, overlayCanvasRef, Boolean(stream));
 
