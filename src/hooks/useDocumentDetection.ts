@@ -1,12 +1,13 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
-import { canvasToJpeg, detectDocumentQuad, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
+import { canvasToJpeg, Quad, warpDocumentToJpeg, CaptureResult } from '../utils/imageProcessing';
 
-const DETECTION_INTERVAL_MS = 800;
+const DETECTION_INTERVAL_MS = 500;
 const DETECTION_MAX_WIDTH = 480;
 
-function scaleQuad(quad: Quad, scale: number): Quad {
-  return quad.map((point) => ({ x: point.x / scale, y: point.y / scale })) as Quad;
-}
+type WorkerMessage =
+  | { type: 'ready' }
+  | { type: 'result'; id: number; quad: Quad | null; durationMs: number }
+  | { type: 'error'; id?: number; message: string };
 
 export function useDocumentDetection(
   cv: any | null,
@@ -16,9 +17,11 @@ export function useDocumentDetection(
 ) {
   const fullFrameCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
   const detectionCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  const workerRef = useRef<Worker | null>(null);
+  const pendingRef = useRef(false);
+  const requestIdRef = useRef(0);
   const [quad, setQuad] = useState<Quad | null>(null);
   const quadRef = useRef<Quad | null>(null);
-  const runningRef = useRef(false);
 
   const drawOverlay = useCallback((detectedQuad: Quad | null) => {
     const video = videoRef.current;
@@ -74,7 +77,7 @@ export function useDocumentDetection(
     return canvas;
   }, [videoRef]);
 
-  const copyDetectionFrame = useCallback(() => {
+  const copyDetectionImageData = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
       return null;
@@ -90,11 +93,11 @@ export function useDocumentDetection(
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, width, height);
-    return { canvas, scale };
+    return { imageData: ctx.getImageData(0, 0, width, height), scale };
   }, [videoRef]);
 
   useEffect(() => {
-    if (!cv || !enabled) {
+    if (!enabled) {
       setQuad(null);
       quadRef.current = null;
       drawOverlay(null);
@@ -103,36 +106,67 @@ export function useDocumentDetection(
 
     let stopped = false;
     let timeoutId = 0;
+    const worker = new Worker(`${import.meta.env.BASE_URL}documentDetectionWorker.js`);
+    workerRef.current = worker;
 
-    const runDetection = () => {
-      if (stopped) return;
-      if (runningRef.current) {
-        timeoutId = window.setTimeout(runDetection, DETECTION_INTERVAL_MS);
+    const scheduleNext = (delay = DETECTION_INTERVAL_MS) => {
+      window.clearTimeout(timeoutId);
+      if (!stopped) timeoutId = window.setTimeout(sendFrameToWorker, delay);
+    };
+
+    const sendFrameToWorker = () => {
+      if (stopped || pendingRef.current) {
+        scheduleNext(DETECTION_INTERVAL_MS);
         return;
       }
 
-      runningRef.current = true;
-      try {
-        const frame = copyDetectionFrame();
-        if (!frame) return;
+      const frame = copyDetectionImageData();
+      if (!frame) {
+        scheduleNext(DETECTION_INTERVAL_MS);
+        return;
+      }
 
-        const detectedSmall = detectDocumentQuad(cv, frame.canvas);
-        const detected = detectedSmall ? scaleQuad(detectedSmall, frame.scale) : null;
-        quadRef.current = detected;
-        setQuad(detected);
-        window.requestAnimationFrame(() => drawOverlay(detected));
-      } catch (err) {
-        console.error('Document detection failed:', err);
+      const id = requestIdRef.current + 1;
+      requestIdRef.current = id;
+      pendingRef.current = true;
+      worker.postMessage(
+        { type: 'detect', id, imageData: frame.imageData, scale: frame.scale },
+        [frame.imageData.data.buffer],
+      );
+    };
+
+    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+      const message = event.data;
+      if (message.type === 'ready') {
+        scheduleNext(100);
+        return;
+      }
+
+      if (message.type === 'result') {
+        pendingRef.current = false;
+        if (message.id !== requestIdRef.current) return;
+        quadRef.current = message.quad;
+        setQuad(message.quad);
+        window.requestAnimationFrame(() => drawOverlay(message.quad));
+        scheduleNext(Math.max(DETECTION_INTERVAL_MS, message.durationMs * 2));
+        return;
+      }
+
+      if (message.type === 'error') {
+        pendingRef.current = false;
+        console.error('Document detection worker failed:', message.message);
         quadRef.current = null;
         setQuad(null);
         window.requestAnimationFrame(() => drawOverlay(null));
-      } finally {
-        runningRef.current = false;
-        timeoutId = window.setTimeout(runDetection, DETECTION_INTERVAL_MS);
+        scheduleNext(1200);
       }
     };
 
-    timeoutId = window.setTimeout(runDetection, 300);
+    worker.onerror = (event) => {
+      pendingRef.current = false;
+      console.error('Document detection worker error:', event.message);
+      scheduleNext(1200);
+    };
 
     const handleResize = () => window.requestAnimationFrame(() => drawOverlay(quadRef.current));
     window.addEventListener('resize', handleResize);
@@ -141,10 +175,12 @@ export function useDocumentDetection(
       stopped = true;
       window.clearTimeout(timeoutId);
       window.removeEventListener('resize', handleResize);
-      runningRef.current = false;
+      pendingRef.current = false;
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
       drawOverlay(null);
     };
-  }, [copyDetectionFrame, cv, drawOverlay, enabled]);
+  }, [copyDetectionImageData, drawOverlay, enabled]);
 
   const captureImage = useCallback((): CaptureResult | null => {
     const canvas = copyFullVideoFrame();
