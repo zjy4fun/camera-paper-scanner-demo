@@ -8,6 +8,7 @@ type Props = {
   detectionStatus: string;
   debugText: string;
   disabled: boolean;
+  capturing: boolean;
   error: string;
   onCapture: () => void;
 };
@@ -20,6 +21,7 @@ export function CameraPreview({
   detectionStatus,
   debugText,
   disabled,
+  capturing,
   error,
   onCapture,
 }: Props) {
@@ -43,7 +45,7 @@ export function CameraPreview({
 
       <div className="preview-actions">
         <button type="button" onClick={onCapture} disabled={disabled || !stream}>
-          截图
+          {capturing ? '处理中...' : '截图'}
         </button>
         <span className={hasDocument ? 'status ok' : 'status'}>
           {hasDocument ? 'Document detected' : 'No document found'}

@@ -6,6 +6,7 @@ import { ImagePreviewModal } from './components/ImagePreviewModal';
 import { useCameraDevices } from './hooks/useCameraDevices';
 import { useCameraStream } from './hooks/useCameraStream';
 import { useDocumentDetection } from './hooks/useDocumentDetection';
+import type { CaptureProcessingMode } from './utils/imageProcessing';
 import './styles.css';
 
 export type CapturedImage = {
@@ -14,12 +15,15 @@ export type CapturedImage = {
   createdAt: string;
   width: number;
   height: number;
+  mode?: CaptureProcessingMode;
+  cropped?: boolean;
 };
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const [captureError, setCaptureError] = useState('');
+  const [captureBusy, setCaptureBusy] = useState(false);
   const [images, setImages] = useState<CapturedImage[]>([]);
   const [previewImage, setPreviewImage] = useState<CapturedImage | null>(null);
 
@@ -35,11 +39,12 @@ export default function App() {
   const { stream, error: streamError, activeCameraLabel, activeCameraSettings } = useCameraStream(selectedDeviceId);
   const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(videoRef, overlayCanvasRef, Boolean(stream));
 
-  function handleCapture() {
+  async function handleCapture() {
     setCaptureError('');
+    setCaptureBusy(true);
 
     try {
-      const result = captureImage();
+      const result = await captureImage();
       if (!result) {
         setCaptureError('截图失败，请确认摄像头画面已正常显示');
         return;
@@ -51,12 +56,16 @@ export default function App() {
         dataUrl: result.dataUrl,
         width: result.width,
         height: result.height,
+        mode: result.mode,
+        cropped: result.cropped,
         createdAt: now.toLocaleString('zh-CN', { hour12: false }),
       };
 
       setImages((current) => [nextImage, ...current].slice(0, 20));
     } catch (err) {
       setCaptureError(err instanceof Error ? err.message : '截图生成失败');
+    } finally {
+      setCaptureBusy(false);
     }
   }
 
@@ -91,7 +100,8 @@ export default function App() {
           hasDocument={Boolean(quad)}
           detectionStatus={detectionStatus}
           debugText={debugText}
-          disabled={!stream}
+          disabled={!stream || captureBusy}
+          capturing={captureBusy}
           error={captureError}
           onCapture={handleCapture}
         />

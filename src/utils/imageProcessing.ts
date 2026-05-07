@@ -1,11 +1,16 @@
 export type Point = { x: number; y: number };
 export type Quad = [Point, Point, Point, Point];
+export type CaptureProcessingMode = 'document' | 'image';
 
 export type CaptureResult = {
   dataUrl: string;
   width: number;
   height: number;
+  mode?: CaptureProcessingMode;
+  cropped?: boolean;
 };
+
+const MAX_CAPTURE_OUTPUT_LONG_EDGE = 2200;
 
 export function canvasToJpeg(sourceCanvas: HTMLCanvasElement, quality = 0.92): CaptureResult {
   return {
@@ -24,6 +29,13 @@ function orderQuadPoints(points: Point[]): Quad {
   const topRight = remaining[1];
   const bottomLeft = remaining[0];
   return [topLeft, topRight, bottomRight, bottomLeft];
+}
+
+function createCanvas(width: number, height: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  return canvas;
 }
 
 function distance(a: Point, b: Point) {
@@ -116,9 +128,28 @@ export function warpDocumentToJpeg(
   quad: Quad,
   quality = 0.92,
 ): CaptureResult {
+  const outputCanvas = warpDocumentToCanvas(cv, sourceCanvas, quad);
+  return {
+    dataUrl: outputCanvas.toDataURL('image/jpeg', quality),
+    width: outputCanvas.width,
+    height: outputCanvas.height,
+    mode: 'document',
+    cropped: true,
+  };
+}
+
+export function warpDocumentToCanvas(
+  cv: any,
+  sourceCanvas: HTMLCanvasElement,
+  quad: Quad,
+  maxLongEdge = MAX_CAPTURE_OUTPUT_LONG_EDGE,
+): HTMLCanvasElement {
   const [tl, tr, br, bl] = quad;
-  const width = Math.max(Math.round(distance(tl, tr)), Math.round(distance(bl, br)), 1);
-  const height = Math.max(Math.round(distance(tl, bl)), Math.round(distance(tr, br)), 1);
+  const measuredWidth = Math.max(Math.round(distance(tl, tr)), Math.round(distance(bl, br)), 1);
+  const measuredHeight = Math.max(Math.round(distance(tl, bl)), Math.round(distance(tr, br)), 1);
+  const scale = Math.min(1, maxLongEdge / Math.max(measuredWidth, measuredHeight));
+  const width = Math.max(1, Math.round(measuredWidth * scale));
+  const height = Math.max(1, Math.round(measuredHeight * scale));
 
   let src: any;
   let dst: any;
@@ -126,9 +157,7 @@ export function warpDocumentToJpeg(
   let dstTri: any;
   let matrix: any;
 
-  const outputCanvas = document.createElement('canvas');
-  outputCanvas.width = width;
-  outputCanvas.height = height;
+  const outputCanvas = createCanvas(width, height);
 
   try {
     src = cv.imread(sourceCanvas);
@@ -152,11 +181,7 @@ export function warpDocumentToJpeg(
     cv.warpPerspective(src, dst, matrix, new cv.Size(width, height), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
     cv.imshow(outputCanvas, dst);
 
-    return {
-      dataUrl: outputCanvas.toDataURL('image/jpeg', quality),
-      width,
-      height,
-    };
+    return outputCanvas;
   } finally {
     src?.delete();
     dst?.delete();

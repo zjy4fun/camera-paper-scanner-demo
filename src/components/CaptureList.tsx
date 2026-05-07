@@ -24,6 +24,7 @@ export function CaptureList({ images, onPreview }: Props) {
                 <strong>#{images.length - index}</strong>
                 <span>{image.createdAt}</span>
                 <span>{image.width} × {image.height}</span>
+                <span>{image.mode === 'document' ? '纸张矫正增强' : '图像增强'}{image.cropped ? ' · 已裁剪' : ''}</span>
               </div>
             </button>
           ))}

@@ -15,6 +15,7 @@ export function ImagePreviewModal({ image, onClose }: Props) {
           <div>
             <strong>图片预览</strong>
             <span>{image.createdAt} · {image.width} × {image.height}</span>
+            <span>{image.mode === 'document' ? '纸张矫正增强' : '图像增强'}{image.cropped ? ' · 已裁剪' : ''}</span>
           </div>
           <button type="button" className="secondary" onClick={onClose}>关闭</button>
         </div>

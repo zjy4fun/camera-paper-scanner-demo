@@ -8,6 +8,7 @@ const FRAME_EDGE_MARGIN_RATIO = 0.012;
 const BORDER_TOUCH_SCORE_PENALTY = 0.12;
 const SINGLE_EDGE_SCORE_PENALTY = 0.65;
 const APPROX_EPSILON_FACTORS = [0.02, 0.035, 0.05, 0.08];
+const MAX_CAPTURE_OUTPUT_LONG_EDGE = 2200;
 
 let cvReadyPromise = null;
 let cvInstance = null;
@@ -106,6 +107,10 @@ function polygonArea(points) {
     const next = points[(index + 1) % points.length];
     return sum + point.x * next.y - next.x * point.y;
   }, 0) / 2);
+}
+
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function getCandidateMetrics(points, contourArea, imageWidth, imageHeight) {
@@ -320,22 +325,189 @@ function detectDocumentQuadFromImageData(opencv, imageData, useCanny) {
   }
 }
 
+function imageDataFromMat(opencv, mat) {
+  let rgba;
+  try {
+    rgba = new opencv.Mat();
+    if (mat.type() === opencv.CV_8UC4) {
+      mat.copyTo(rgba);
+    } else if (mat.type() === opencv.CV_8UC3) {
+      opencv.cvtColor(mat, rgba, opencv.COLOR_RGB2RGBA, 0);
+    } else {
+      opencv.cvtColor(mat, rgba, opencv.COLOR_GRAY2RGBA, 0);
+    }
+    return new ImageData(new Uint8ClampedArray(rgba.data), rgba.cols, rgba.rows);
+  } finally {
+    rgba?.delete();
+  }
+}
+
+function sourceMatFromImageData(opencv, imageData) {
+  const source = new opencv.Mat(imageData.height, imageData.width, opencv.CV_8UC4);
+  source.data.set(imageData.data);
+  return source;
+}
+
+function resizeMatToLongEdge(opencv, sourceMat, maxLongEdge = MAX_CAPTURE_OUTPUT_LONG_EDGE) {
+  const longEdge = Math.max(sourceMat.cols, sourceMat.rows);
+  if (longEdge <= maxLongEdge) return sourceMat.clone();
+
+  const scale = maxLongEdge / longEdge;
+  const width = Math.max(1, Math.round(sourceMat.cols * scale));
+  const height = Math.max(1, Math.round(sourceMat.rows * scale));
+  const resized = new opencv.Mat();
+  opencv.resize(sourceMat, resized, new opencv.Size(width, height), 0, 0, opencv.INTER_AREA);
+  return resized;
+}
+
+function warpDocumentMat(opencv, sourceMat, quad, maxLongEdge = MAX_CAPTURE_OUTPUT_LONG_EDGE) {
+  const [tl, tr, br, bl] = quad;
+  const measuredWidth = Math.max(Math.round(distance(tl, tr)), Math.round(distance(bl, br)), 1);
+  const measuredHeight = Math.max(Math.round(distance(tl, bl)), Math.round(distance(tr, br)), 1);
+  const scale = Math.min(1, maxLongEdge / Math.max(measuredWidth, measuredHeight));
+  const width = Math.max(1, Math.round(measuredWidth * scale));
+  const height = Math.max(1, Math.round(measuredHeight * scale));
+
+  let srcTri;
+  let dstTri;
+  let matrix;
+  const dst = new opencv.Mat();
+
+  try {
+    srcTri = opencv.matFromArray(4, 1, opencv.CV_32FC2, [
+      tl.x, tl.y,
+      tr.x, tr.y,
+      br.x, br.y,
+      bl.x, bl.y,
+    ]);
+    dstTri = opencv.matFromArray(4, 1, opencv.CV_32FC2, [
+      0, 0,
+      width - 1, 0,
+      width - 1, height - 1,
+      0, height - 1,
+    ]);
+    matrix = opencv.getPerspectiveTransform(srcTri, dstTri);
+    opencv.warpPerspective(sourceMat, dst, matrix, new opencv.Size(width, height), opencv.INTER_LINEAR, opencv.BORDER_CONSTANT, new opencv.Scalar());
+    return dst;
+  } finally {
+    srcTri?.delete();
+    dstTri?.delete();
+    matrix?.delete();
+  }
+}
+
+function enhanceDocumentMat(opencv, sourceMat) {
+  let gray;
+  let blurred;
+  let sharpened;
+  let boosted;
+  let output;
+
+  try {
+    gray = new opencv.Mat();
+    blurred = new opencv.Mat();
+    sharpened = new opencv.Mat();
+    boosted = new opencv.Mat();
+    output = new opencv.Mat();
+
+    opencv.cvtColor(sourceMat, gray, opencv.COLOR_RGBA2GRAY, 0);
+    opencv.GaussianBlur(gray, blurred, new opencv.Size(3, 3), 0);
+    opencv.addWeighted(gray, 1.55, blurred, -0.55, 0, sharpened);
+    opencv.convertScaleAbs(sharpened, boosted, 1.14, 8);
+    opencv.cvtColor(boosted, output, opencv.COLOR_GRAY2RGBA, 0);
+    return output.clone();
+  } finally {
+    gray?.delete();
+    blurred?.delete();
+    sharpened?.delete();
+    boosted?.delete();
+    output?.delete();
+  }
+}
+
+function enhanceImageMat(opencv, sourceMat) {
+  let blurred;
+  let sharpened;
+  let boosted;
+
+  try {
+    blurred = new opencv.Mat();
+    sharpened = new opencv.Mat();
+    boosted = new opencv.Mat();
+
+    opencv.GaussianBlur(sourceMat, blurred, new opencv.Size(3, 3), 0);
+    opencv.addWeighted(sourceMat, 1.28, blurred, -0.28, 0, sharpened);
+    opencv.convertScaleAbs(sharpened, boosted, 1.06, 4);
+    return boosted.clone();
+  } finally {
+    blurred?.delete();
+    sharpened?.delete();
+    boosted?.delete();
+  }
+}
+
+function processCaptureFromImageData(opencv, imageData, quad) {
+  let source;
+  let normalized;
+  let enhanced;
+
+  try {
+    source = sourceMatFromImageData(opencv, imageData);
+    normalized = quad ? warpDocumentMat(opencv, source, quad) : resizeMatToLongEdge(opencv, source);
+    enhanced = quad ? enhanceDocumentMat(opencv, normalized) : enhanceImageMat(opencv, normalized);
+
+    return {
+      imageData: imageDataFromMat(opencv, enhanced),
+      mode: quad ? 'document' : 'image',
+      cropped: Boolean(quad),
+    };
+  } finally {
+    source?.delete();
+    normalized?.delete();
+    enhanced?.delete();
+  }
+}
+
 self.onmessage = async (event) => {
-  const { type, id, imageData, scale, useCanny = false } = event.data || {};
-  if (type !== 'detect') return;
+  const { type, id, imageData, scale, useCanny = false, quad: captureQuad = null } = event.data || {};
+  if (type !== 'detect' && type !== 'capture') return;
 
   const startedAt = performance.now();
-  postDebug('detect-start', {
-    id,
-    width: imageData?.width,
-    height: imageData?.height,
-    scale,
-    useCanny,
-  });
+  postDebug(type === 'capture' ? 'capture-start' : 'detect-start', {
+      id,
+      width: imageData?.width,
+      height: imageData?.height,
+      scale,
+      useCanny,
+      hasQuad: Boolean(captureQuad),
+    });
   try {
     await loadOpenCV();
     const opencv = cvInstance;
     if (!opencv) throw new Error('OpenCV.js worker 未初始化完成：cvInstance 不可用');
+    if (type === 'capture') {
+      const result = processCaptureFromImageData(opencv, imageData, captureQuad);
+      self.postMessage({
+        type: 'capture-result',
+        id,
+        imageData: result.imageData,
+        width: result.imageData.width,
+        height: result.imageData.height,
+        mode: result.mode,
+        cropped: result.cropped,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      postDebug('capture-complete', {
+        id,
+        mode: result.mode,
+        cropped: result.cropped,
+        width: result.imageData.width,
+        height: result.imageData.height,
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+      return;
+    }
+
     const result = detectDocumentQuadFromImageData(opencv, imageData, useCanny);
     const smallQuad = result.quad;
     const quad = smallQuad

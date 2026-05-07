@@ -1,5 +1,5 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
-import { canvasToJpeg, cropQuadBoundingBoxToJpeg, Quad, CaptureResult } from '../utils/imageProcessing';
+import { canvasToJpeg, cropQuadBoundingBoxToJpeg, Quad, CaptureResult, CaptureProcessingMode } from '../utils/imageProcessing';
 
 const DETECTION_INTERVAL_MS = 100;
 const DETECTION_MAX_WIDTH = 640;
@@ -13,15 +13,41 @@ console.log('[document-detection] module-loaded', {
 type DetectionStatus = 'idle' | 'ready' | 'detecting' | 'found' | 'not-found' | 'error';
 
 type WorkerResult = {
-  type: 'ready' | 'result' | 'error' | 'debug';
+  type: 'ready' | 'result' | 'capture-result' | 'error' | 'debug';
   id?: number;
   quad?: Quad | null;
+  imageData?: ImageData;
+  width?: number;
+  height?: number;
+  mode?: CaptureProcessingMode;
+  cropped?: boolean;
   durationMs?: number;
   source?: 'white-mask' | 'threshold' | 'threshold-inverse' | 'canny' | 'none';
   message?: string;
   stage?: string;
   detail?: Record<string, unknown>;
 };
+
+type CaptureRequest = {
+  id: number;
+  resolve: (result: CaptureResult) => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
+};
+
+function imageDataToJpeg(imageData: ImageData, quality = 0.92): CaptureResult {
+  const canvas = document.createElement('canvas');
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('截图处理失败：无法创建输出画布');
+  ctx.putImageData(imageData, 0, 0);
+  return {
+    dataUrl: canvas.toDataURL('image/jpeg', quality),
+    width: imageData.width,
+    height: imageData.height,
+  };
+}
 
 export function useDocumentDetection(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -35,6 +61,7 @@ export function useDocumentDetection(
   const requestIdRef = useRef(0);
   const useCannyRef = useRef(false);
   const quadRef = useRef<Quad | null>(null);
+  const captureRequestRef = useRef<CaptureRequest | null>(null);
   const lastConsoleLogRef = useRef<Record<string, number>>({});
   const [quad, setQuad] = useState<Quad | null>(null);
   const [status, setStatus] = useState<DetectionStatus>('idle');
@@ -180,9 +207,43 @@ export function useDocumentDetection(
         return;
       }
 
+      if (data.type === 'capture-result') {
+        const pendingCapture = captureRequestRef.current;
+        if (pendingCapture && pendingCapture.id === data.id && data.imageData) {
+          window.clearTimeout(pendingCapture.timeoutId);
+          captureRequestRef.current = null;
+          workerBusyRef.current = false;
+          const result = {
+            ...imageDataToJpeg(data.imageData),
+            mode: data.mode,
+            cropped: data.cropped,
+          };
+          pendingCapture.resolve(result);
+          logDetectionEvent('capture-worker-complete', {
+            id: data.id,
+            mode: data.mode ?? 'image',
+            cropped: Boolean(data.cropped),
+            width: result.width,
+            height: result.height,
+            durationMs: data.durationMs,
+          });
+          scheduleNext();
+        }
+        return;
+      }
+
       workerBusyRef.current = false;
 
       if (data.type === 'error') {
+        const pendingCapture = captureRequestRef.current;
+        if (pendingCapture && pendingCapture.id === data.id) {
+          window.clearTimeout(pendingCapture.timeoutId);
+          captureRequestRef.current = null;
+          pendingCapture.reject(new Error(data.message || '截图处理失败'));
+          scheduleNext(500);
+          return;
+        }
+
         logDetectionEvent('worker-error', {
           id: data.id,
           message: data.message,
@@ -216,6 +277,11 @@ export function useDocumentDetection(
     };
 
     function runDetection() {
+      if (captureRequestRef.current) {
+        scheduleNext();
+        return;
+      }
+
       if (stopped || workerBusyRef.current) {
         if (workerBusyRef.current) {
           logDetectionEvent('worker-busy', undefined, 1000);
@@ -297,6 +363,11 @@ export function useDocumentDetection(
       worker?.removeEventListener('error', handleWorkerRuntimeError);
       worker?.removeEventListener('messageerror', handleWorkerMessageError);
       worker?.terminate();
+      if (captureRequestRef.current) {
+        window.clearTimeout(captureRequestRef.current.timeoutId);
+        captureRequestRef.current.reject(new Error('截图处理已取消'));
+        captureRequestRef.current = null;
+      }
       logDetectionEvent('worker-stop');
       workerRef.current = null;
       workerBusyRef.current = false;
@@ -304,12 +375,60 @@ export function useDocumentDetection(
     };
   }, [copyDetectionFrame, drawOverlay, enabled, logDetectionEvent, videoRef]);
 
-  const captureImage = useCallback((): CaptureResult | null => {
+  const captureImage = useCallback(async (): Promise<CaptureResult | null> => {
     const canvas = copyFullVideoFrame();
     if (!canvas) return null;
-    if (quadRef.current) return cropQuadBoundingBoxToJpeg(canvas, quadRef.current);
+    const startedAt = performance.now();
+    const detectedQuad = quadRef.current;
+    logDetectionEvent('capture-start', {
+      width: canvas.width,
+      height: canvas.height,
+      hasQuad: Boolean(detectedQuad),
+    });
+
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const worker = workerRef.current;
+      if (!worker) throw new Error('截图处理 Worker 未就绪');
+
+      const result = await new Promise<CaptureResult>((resolve, reject) => {
+        const id = requestIdRef.current + 1;
+        requestIdRef.current = id;
+        const timeoutId = window.setTimeout(() => {
+          if (captureRequestRef.current?.id === id) {
+            captureRequestRef.current = null;
+            workerBusyRef.current = false;
+            reject(new Error('截图处理超时，请稍后重试'));
+          }
+        }, 30000);
+
+        captureRequestRef.current = { id, resolve, reject, timeoutId };
+        workerBusyRef.current = true;
+        worker.postMessage({
+          type: 'capture',
+          id,
+          imageData,
+          quad: detectedQuad,
+        });
+      });
+      logDetectionEvent('capture-complete', {
+        mode: result.mode ?? 'image',
+        cropped: Boolean(result.cropped),
+        width: result.width,
+        height: result.height,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      return result;
+    } catch (error) {
+      console.warn('[document-detection] capture-processing-fallback', error);
+    }
+
+    if (detectedQuad) return cropQuadBoundingBoxToJpeg(canvas, detectedQuad);
     return canvasToJpeg(canvas);
-  }, [copyFullVideoFrame]);
+  }, [copyFullVideoFrame, logDetectionEvent]);
 
   return { quad, status, debugText, captureImage };
 }
