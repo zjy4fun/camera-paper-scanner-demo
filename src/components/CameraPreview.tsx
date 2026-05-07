@@ -46,7 +46,7 @@ export function CameraPreview({
           截图
         </button>
         <span className={hasDocument ? 'status ok' : 'status'}>
-          {hasDocument ? '已检测到纸张，截图将自动矫正' : '未检测到纸张，截图将保存完整画面'}
+          {hasDocument ? 'Document detected' : 'No document found'}
         </span>
         <span className={`detect-debug ${detectionStatus}`}>{debugText}</span>
       </div>

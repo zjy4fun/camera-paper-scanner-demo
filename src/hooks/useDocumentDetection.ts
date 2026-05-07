@@ -1,74 +1,19 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { canvasToJpeg, cropQuadBoundingBoxToJpeg, Quad, CaptureResult } from '../utils/imageProcessing';
 
-const DETECTION_INTERVAL_MS = 700;
-const DETECTION_MAX_WIDTH = 480;
+const DETECTION_INTERVAL_MS = 100;
+const DETECTION_MAX_WIDTH = 640;
 
 type DetectionStatus = 'idle' | 'ready' | 'detecting' | 'found' | 'not-found' | 'error';
 
-function scaleQuad(quad: Quad, scale: number): Quad {
-  return quad.map((point) => ({ x: point.x / scale, y: point.y / scale })) as Quad;
-}
-
-function detectBrightPaper(canvas: HTMLCanvasElement): Quad | null {
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) return null;
-
-  const { width, height } = canvas;
-  const { data } = ctx.getImageData(0, 0, width, height);
-  const step = 4;
-  const marginX = Math.round(width * 0.02);
-  const marginY = Math.round(height * 0.02);
-  let minX = width;
-  let minY = height;
-  let maxX = 0;
-  let maxY = 0;
-  let count = 0;
-
-  for (let y = marginY; y < height - marginY; y += step) {
-    for (let x = marginX; x < width - marginX; x += step) {
-      const idx = (y * width + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const brightness = (r + g + b) / 3;
-      const saturation = max - min;
-
-      if (brightness > 145 && saturation < 85) {
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-        count += 1;
-      }
-    }
-  }
-
-  const sampled = Math.max(1, Math.floor((width / step) * (height / step)));
-  const coverage = count / sampled;
-  const boxWidth = maxX - minX;
-  const boxHeight = maxY - minY;
-  const area = boxWidth * boxHeight;
-
-  if (coverage < 0.012 || area < width * height * 0.035 || boxWidth < width * 0.12 || boxHeight < height * 0.12) {
-    return null;
-  }
-
-  const pad = Math.round(Math.min(width, height) * 0.015);
-  minX = Math.max(0, minX - pad);
-  minY = Math.max(0, minY - pad);
-  maxX = Math.min(width - 1, maxX + pad);
-  maxY = Math.min(height - 1, maxY + pad);
-
-  return [
-    { x: minX, y: minY },
-    { x: maxX, y: minY },
-    { x: maxX, y: maxY },
-    { x: minX, y: maxY },
-  ];
-}
+type WorkerResult = {
+  type: 'ready' | 'result' | 'error';
+  id?: number;
+  quad?: Quad | null;
+  durationMs?: number;
+  source?: 'threshold' | 'canny' | 'none';
+  message?: string;
+};
 
 export function useDocumentDetection(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -77,11 +22,14 @@ export function useDocumentDetection(
 ) {
   const fullFrameCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
   const detectionCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  const runningRef = useRef(false);
+  const workerRef = useRef<Worker | null>(null);
+  const workerBusyRef = useRef(false);
+  const requestIdRef = useRef(0);
+  const useCannyRef = useRef(false);
+  const quadRef = useRef<Quad | null>(null);
   const [quad, setQuad] = useState<Quad | null>(null);
   const [status, setStatus] = useState<DetectionStatus>('idle');
-  const [debugText, setDebugText] = useState('等待摄像头');
-  const quadRef = useRef<Quad | null>(null);
+  const [debugText, setDebugText] = useState('No document found');
 
   const drawOverlay = useCallback((detectedQuad: Quad | null) => {
     const video = videoRef.current;
@@ -113,20 +61,28 @@ export function useDocumentDetection(
     const offsetY = (rect.height - contentHeight) / 2;
     const scaleX = contentWidth / video.videoWidth;
     const scaleY = contentHeight / video.videoHeight;
+    const canvasPoints = detectedQuad.map((point) => ({
+      x: offsetX + point.x * scaleX,
+      y: offsetY + point.y * scaleY,
+    }));
 
-    ctx.strokeStyle = '#00d084';
-    ctx.lineWidth = 4;
-    ctx.shadowColor = 'rgba(0, 208, 132, 0.45)';
-    ctx.shadowBlur = 8;
+    ctx.strokeStyle = '#00ff00';
+    ctx.fillStyle = '#00ff00';
+    ctx.lineWidth = 3;
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    detectedQuad.forEach((point, index) => {
-      const x = offsetX + point.x * scaleX;
-      const y = offsetY + point.y * scaleY;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    canvasPoints.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
     });
     ctx.closePath();
     ctx.stroke();
+
+    canvasPoints.forEach((point) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    });
   }, [overlayCanvasRef, videoRef]);
 
   const copyFullVideoFrame = useCallback(() => {
@@ -156,79 +112,101 @@ export function useDocumentDetection(
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, width, height);
-    return { canvas, scale };
+    return { imageData: ctx.getImageData(0, 0, width, height), scale };
   }, [videoRef]);
 
   useEffect(() => {
     if (!enabled) {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      workerBusyRef.current = false;
+      useCannyRef.current = false;
+      quadRef.current = null;
       setQuad(null);
       setStatus('idle');
-      setDebugText('等待摄像头');
-      quadRef.current = null;
+      setDebugText('No document found');
       drawOverlay(null);
       return;
     }
 
     let stopped = false;
     let timeoutId = 0;
+    const worker = new Worker(`${import.meta.env.BASE_URL}documentDetectionWorker.js`);
+    workerRef.current = worker;
     setStatus('ready');
-    setDebugText('轻量检测已就绪');
+    setDebugText('No document found');
 
     const scheduleNext = (delay = DETECTION_INTERVAL_MS) => {
       window.clearTimeout(timeoutId);
       if (!stopped) timeoutId = window.setTimeout(runDetection, delay);
     };
 
-    const runDetection = () => {
-      if (stopped || runningRef.current) {
-        scheduleNext(DETECTION_INTERVAL_MS);
+    const handleWorkerMessage = (event: MessageEvent<WorkerResult>) => {
+      const data = event.data;
+      if (stopped) return;
+
+      if (data.type === 'ready') {
+        scheduleNext(0);
         return;
       }
 
-      runningRef.current = true;
-      const startedAt = performance.now();
-      setStatus('detecting');
-      setDebugText('检测中');
+      workerBusyRef.current = false;
 
-      try {
-        const frame = copyDetectionFrame();
-        if (!frame) {
-          scheduleNext(DETECTION_INTERVAL_MS);
-          return;
-        }
-
-        const smallQuad = detectBrightPaper(frame.canvas);
-        const detected = smallQuad ? scaleQuad(smallQuad, frame.scale) : null;
-        const durationMs = Math.round(performance.now() - startedAt);
-        quadRef.current = detected;
-        setQuad(detected);
-        setStatus(detected ? 'found' : 'not-found');
-        setDebugText(detected ? `检测到纸张区域，耗时 ${durationMs}ms` : `未找到纸张区域，耗时 ${durationMs}ms`);
-        window.requestAnimationFrame(() => drawOverlay(detected));
-        scheduleNext(DETECTION_INTERVAL_MS);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : '纸张检测失败';
-        console.error('Document detection failed:', err);
+      if (data.type === 'error') {
         quadRef.current = null;
         setQuad(null);
         setStatus('error');
-        setDebugText(message);
-        window.requestAnimationFrame(() => drawOverlay(null));
-        scheduleNext(1200);
-      } finally {
-        runningRef.current = false;
+        setDebugText(data.message || 'No document found');
+        drawOverlay(null);
+        scheduleNext(500);
+        return;
       }
+
+      const detected = data.quad || null;
+      quadRef.current = detected;
+      setQuad(detected);
+      setStatus(detected ? 'found' : 'not-found');
+      setDebugText(detected ? 'Document detected' : 'No document found');
+      useCannyRef.current = !detected;
+      drawOverlay(detected);
+      scheduleNext();
     };
 
-    scheduleNext(300);
-    const handleResize = () => window.requestAnimationFrame(() => drawOverlay(quadRef.current));
+    function runDetection() {
+      if (stopped || workerBusyRef.current) {
+        scheduleNext();
+        return;
+      }
+
+      const frame = copyDetectionFrame();
+      if (!frame) {
+        scheduleNext();
+        return;
+      }
+
+      workerBusyRef.current = true;
+      setStatus('detecting');
+      worker.postMessage({
+        type: 'detect',
+        id: requestIdRef.current += 1,
+        imageData: frame.imageData,
+        scale: frame.scale,
+        useCanny: useCannyRef.current,
+      });
+    }
+
+    worker.addEventListener('message', handleWorkerMessage);
+    const handleResize = () => drawOverlay(quadRef.current);
     window.addEventListener('resize', handleResize);
 
     return () => {
       stopped = true;
       window.clearTimeout(timeoutId);
       window.removeEventListener('resize', handleResize);
-      runningRef.current = false;
+      worker.removeEventListener('message', handleWorkerMessage);
+      worker.terminate();
+      workerRef.current = null;
+      workerBusyRef.current = false;
       drawOverlay(null);
     };
   }, [copyDetectionFrame, drawOverlay, enabled]);
