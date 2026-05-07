@@ -3,16 +3,24 @@ import { canvasToJpeg, cropQuadBoundingBoxToJpeg, Quad, CaptureResult } from '..
 
 const DETECTION_INTERVAL_MS = 100;
 const DETECTION_MAX_WIDTH = 640;
+const CONSOLE_LOG_INTERVAL_MS = 500;
+
+console.log('[document-detection] module-loaded', {
+  detectionIntervalMs: DETECTION_INTERVAL_MS,
+  detectionMaxWidth: DETECTION_MAX_WIDTH,
+});
 
 type DetectionStatus = 'idle' | 'ready' | 'detecting' | 'found' | 'not-found' | 'error';
 
 type WorkerResult = {
-  type: 'ready' | 'result' | 'error';
+  type: 'ready' | 'result' | 'error' | 'debug';
   id?: number;
   quad?: Quad | null;
   durationMs?: number;
-  source?: 'threshold' | 'canny' | 'none';
+  source?: 'white-mask' | 'threshold' | 'threshold-inverse' | 'canny' | 'none';
   message?: string;
+  stage?: string;
+  detail?: Record<string, unknown>;
 };
 
 export function useDocumentDetection(
@@ -27,9 +35,19 @@ export function useDocumentDetection(
   const requestIdRef = useRef(0);
   const useCannyRef = useRef(false);
   const quadRef = useRef<Quad | null>(null);
+  const lastConsoleLogRef = useRef<Record<string, number>>({});
   const [quad, setQuad] = useState<Quad | null>(null);
   const [status, setStatus] = useState<DetectionStatus>('idle');
   const [debugText, setDebugText] = useState('No document found');
+
+  const logDetectionEvent = useCallback((eventName: string, payload: Record<string, unknown> = {}, throttleMs = 0) => {
+    const now = performance.now();
+    const lastTime = lastConsoleLogRef.current[eventName] ?? 0;
+    if (throttleMs > 0 && now - lastTime < throttleMs) return;
+
+    lastConsoleLogRef.current[eventName] = now;
+    console.log('[document-detection]', eventName, payload);
+  }, []);
 
   const drawOverlay = useCallback((detectedQuad: Quad | null) => {
     const video = videoRef.current;
@@ -116,7 +134,16 @@ export function useDocumentDetection(
   }, [videoRef]);
 
   useEffect(() => {
+    logDetectionEvent('effect-run', { enabled });
+
     if (!enabled) {
+      const video = videoRef.current;
+      logDetectionEvent('disabled', {
+        reason: 'stream not ready',
+        readyState: video?.readyState ?? null,
+        videoWidth: video?.videoWidth ?? 0,
+        videoHeight: video?.videoHeight ?? 0,
+      }, 1000);
       workerRef.current?.terminate();
       workerRef.current = null;
       workerBusyRef.current = false;
@@ -131,21 +158,24 @@ export function useDocumentDetection(
 
     let stopped = false;
     let timeoutId = 0;
-    const worker = new Worker(`${import.meta.env.BASE_URL}documentDetectionWorker.js`);
-    workerRef.current = worker;
-    setStatus('ready');
-    setDebugText('No document found');
+    let worker: Worker | null = null;
 
-    const scheduleNext = (delay = DETECTION_INTERVAL_MS) => {
+    function scheduleNext(delay = DETECTION_INTERVAL_MS) {
       window.clearTimeout(timeoutId);
       if (!stopped) timeoutId = window.setTimeout(runDetection, delay);
-    };
+    }
 
     const handleWorkerMessage = (event: MessageEvent<WorkerResult>) => {
       const data = event.data;
       if (stopped) return;
 
+      if (data.type === 'debug') {
+        logDetectionEvent(`worker-debug:${data.stage ?? 'unknown'}`, data.detail ?? {}, data.stage?.startsWith('detect-') ? 1000 : 0);
+        return;
+      }
+
       if (data.type === 'ready') {
+        logDetectionEvent('worker-ready');
         scheduleNext(0);
         return;
       }
@@ -153,6 +183,10 @@ export function useDocumentDetection(
       workerBusyRef.current = false;
 
       if (data.type === 'error') {
+        logDetectionEvent('worker-error', {
+          id: data.id,
+          message: data.message,
+        });
         quadRef.current = null;
         setQuad(null);
         setStatus('error');
@@ -163,10 +197,19 @@ export function useDocumentDetection(
       }
 
       const detected = data.quad || null;
+      const durationText = typeof data.durationMs === 'number' ? ` · ${data.durationMs}ms` : '';
+      const sourceText = data.source && data.source !== 'none' ? ` · ${data.source}` : '';
+      logDetectionEvent(detected ? 'result-found' : 'result-none', {
+        id: data.id,
+        found: Boolean(detected),
+        source: data.source ?? 'none',
+        durationMs: data.durationMs,
+        quad: detected,
+      }, CONSOLE_LOG_INTERVAL_MS);
       quadRef.current = detected;
       setQuad(detected);
       setStatus(detected ? 'found' : 'not-found');
-      setDebugText(detected ? 'Document detected' : 'No document found');
+      setDebugText(detected ? `Document detected${sourceText}${durationText}` : `No document found${durationText}`);
       useCannyRef.current = !detected;
       drawOverlay(detected);
       scheduleNext();
@@ -174,19 +217,36 @@ export function useDocumentDetection(
 
     function runDetection() {
       if (stopped || workerBusyRef.current) {
+        if (workerBusyRef.current) {
+          logDetectionEvent('worker-busy', undefined, 1000);
+        }
         scheduleNext();
         return;
       }
 
       const frame = copyDetectionFrame();
       if (!frame) {
+        const video = videoRef.current;
+        logDetectionEvent('frame-unavailable', {
+          readyState: video?.readyState ?? null,
+          videoWidth: video?.videoWidth ?? 0,
+          videoHeight: video?.videoHeight ?? 0,
+        }, 1000);
         scheduleNext();
         return;
       }
 
       workerBusyRef.current = true;
       setStatus('detecting');
-      worker.postMessage({
+      const nextId = requestIdRef.current + 1;
+      logDetectionEvent('detect-frame', {
+        id: nextId,
+        width: frame.imageData.width,
+        height: frame.imageData.height,
+        scale: frame.scale,
+        useCanny: useCannyRef.current,
+      }, 1000);
+      worker?.postMessage({
         type: 'detect',
         id: requestIdRef.current += 1,
         imageData: frame.imageData,
@@ -195,7 +255,37 @@ export function useDocumentDetection(
       });
     }
 
+    function handleWorkerRuntimeError(event: ErrorEvent) {
+      if (stopped) return;
+      workerBusyRef.current = false;
+      logDetectionEvent('worker-runtime-error', {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+      });
+      setStatus('error');
+      setDebugText(event.message || 'Worker runtime error');
+    }
+
+    function handleWorkerMessageError() {
+      if (stopped) return;
+      workerBusyRef.current = false;
+      logDetectionEvent('worker-message-error');
+      setStatus('error');
+      setDebugText('Worker message error');
+    }
+
+    const workerUrl = `${import.meta.env.BASE_URL}documentDetectionWorker.js`;
+    worker = new Worker(workerUrl);
     worker.addEventListener('message', handleWorkerMessage);
+    worker.addEventListener('error', handleWorkerRuntimeError);
+    worker.addEventListener('messageerror', handleWorkerMessageError);
+    logDetectionEvent('worker-start', { workerUrl });
+    workerRef.current = worker;
+    setStatus('ready');
+    setDebugText('No document found');
+
     const handleResize = () => drawOverlay(quadRef.current);
     window.addEventListener('resize', handleResize);
 
@@ -203,13 +293,16 @@ export function useDocumentDetection(
       stopped = true;
       window.clearTimeout(timeoutId);
       window.removeEventListener('resize', handleResize);
-      worker.removeEventListener('message', handleWorkerMessage);
-      worker.terminate();
+      worker?.removeEventListener('message', handleWorkerMessage);
+      worker?.removeEventListener('error', handleWorkerRuntimeError);
+      worker?.removeEventListener('messageerror', handleWorkerMessageError);
+      worker?.terminate();
+      logDetectionEvent('worker-stop');
       workerRef.current = null;
       workerBusyRef.current = false;
       drawOverlay(null);
     };
-  }, [copyDetectionFrame, drawOverlay, enabled]);
+  }, [copyDetectionFrame, drawOverlay, enabled, logDetectionEvent, videoRef]);
 
   const captureImage = useCallback((): CaptureResult | null => {
     const canvas = copyFullVideoFrame();
