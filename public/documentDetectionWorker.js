@@ -1,6 +1,7 @@
 /* global importScripts, cv */
 const OPENCV_URL = './opencv.js';
-const MIN_DOCUMENT_AREA_RATIO = 0.15;
+const MIN_DOCUMENT_AREA_RATIO = 0.08;
+const STRONG_DOCUMENT_AREA_RATIO = 0.15;
 
 let cvReadyPromise = null;
 let cvInstance = null;
@@ -80,7 +81,7 @@ function rectangleFromContour(opencv, contour) {
   return points.map((point) => ({ x: Math.round(point.x), y: Math.round(point.y) }));
 }
 
-function getBestQuadrilateral(opencv, binary, imageArea) {
+function getBestQuadrilateral(opencv, binary, imageArea, minAreaRatio = MIN_DOCUMENT_AREA_RATIO) {
   const contours = new opencv.MatVector();
   const hierarchy = new opencv.Mat();
   let best = null;
@@ -94,7 +95,7 @@ function getBestQuadrilateral(opencv, binary, imageArea) {
 
       try {
         const area = Math.abs(opencv.contourArea(contour));
-        if (area < imageArea * MIN_DOCUMENT_AREA_RATIO) continue;
+        if (area < imageArea * minAreaRatio) continue;
 
         const perimeter = opencv.arcLength(contour, true);
         approx = new opencv.Mat();
@@ -132,6 +133,8 @@ function detectDocumentQuadFromImageData(opencv, imageData, useCanny) {
   let blurred;
   let binary;
   let edges;
+  let closed;
+  let kernel;
 
   try {
     src = new opencv.Mat(imageData.height, imageData.width, opencv.CV_8UC4);
@@ -140,6 +143,8 @@ function detectDocumentQuadFromImageData(opencv, imageData, useCanny) {
     blurred = new opencv.Mat();
     binary = new opencv.Mat();
     edges = new opencv.Mat();
+    closed = new opencv.Mat();
+    kernel = opencv.Mat.ones(5, 5, opencv.CV_8U);
 
     opencv.cvtColor(src, gray, opencv.COLOR_RGBA2GRAY, 0);
     opencv.GaussianBlur(gray, blurred, new opencv.Size(5, 5), 0);
@@ -156,11 +161,13 @@ function detectDocumentQuadFromImageData(opencv, imageData, useCanny) {
       11,
       2,
     );
-    quad = getBestQuadrilateral(opencv, binary, imageArea);
+    quad = getBestQuadrilateral(opencv, binary, imageArea, STRONG_DOCUMENT_AREA_RATIO);
 
     if (!quad || useCanny) {
-      opencv.Canny(blurred, edges, 50, 150);
-      quad = getBestQuadrilateral(opencv, edges, imageArea) || quad;
+      opencv.Canny(blurred, edges, 30, 120);
+      opencv.morphologyEx(edges, closed, opencv.MORPH_CLOSE, kernel);
+      opencv.dilate(closed, closed, kernel);
+      quad = getBestQuadrilateral(opencv, closed, imageArea, MIN_DOCUMENT_AREA_RATIO) || quad;
     }
 
     return quad;
@@ -170,6 +177,8 @@ function detectDocumentQuadFromImageData(opencv, imageData, useCanny) {
     blurred?.delete();
     binary?.delete();
     edges?.delete();
+    closed?.delete();
+    kernel?.delete();
   }
 }
 
