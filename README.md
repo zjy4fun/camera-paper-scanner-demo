@@ -53,6 +53,16 @@ npm run build
 10. 选取面积最大的候选四边形作为纸张区域
 11. 将 downsample 后坐标缩放回原始视频尺寸，并绘制到 overlay canvas
 
+## iPhone / Continuity Camera 说明
+
+macOS 上 iPhone 摄像头通常以 Continuity Camera 形式暴露给浏览器。项目做了几项兼容：
+
+- 下拉列表始终提供“系统默认摄像头”，即使浏览器暂时没有枚举出具体设备也能尝试打开摄像头。
+- 点击“授权/刷新”会先请求摄像头权限，并在短时间内重复枚举设备；这是因为 iPhone 摄像头可能在采集开始后才出现在 `enumerateDevices()` 结果里。
+- 如果设备名称包含 `iPhone` / `Continuity` / `连续互通` / `接续互通`，会自动优先选择该摄像头。
+
+如果 iPhone 仍未出现，请确认 iPhone 已解锁、靠近 Mac、两台设备使用同一 Apple ID 且开启 Wi‑Fi/蓝牙，然后在浏览器地址栏摄像头权限里允许本页面访问摄像头后刷新。
+
 ## 性能说明
 
 - 检测频率限制为 10fps，即每 100ms 最多处理一帧。

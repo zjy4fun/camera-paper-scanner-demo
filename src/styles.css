@@ -64,11 +64,12 @@ button.secondary {
 }
 button.secondary:hover:not(:disabled) { background: #e2e8f0; }
 
-.inline-error {
+.inline-error, .camera-help {
   grid-column: 1 / -1;
-  color: #b42318;
   font-size: 13px;
 }
+.inline-error { color: #b42318; }
+.camera-help { color: #667085; }
 
 .alert, .notice {
   margin: 0 0 16px;

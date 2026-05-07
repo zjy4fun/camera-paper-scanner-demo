@@ -1,3 +1,5 @@
+import { DEFAULT_CAMERA_ID } from '../hooks/useCameraDevices';
+
 type Props = {
   devices: MediaDeviceInfo[];
   selectedDeviceId: string;
@@ -15,20 +17,20 @@ export function CameraSelector({ devices, selectedDeviceId, loading, error, onCh
         id="camera-select"
         value={selectedDeviceId}
         onChange={(event) => onChange(event.target.value)}
-        disabled={loading || devices.length === 0}
+        disabled={loading}
       >
-        {devices.length === 0 ? (
-          <option value="">未检测到摄像头</option>
-        ) : devices.map((device, index) => (
+        <option value={DEFAULT_CAMERA_ID}>系统默认摄像头</option>
+        {devices.map((device, index) => (
           <option key={device.deviceId} value={device.deviceId}>
             {device.label || `摄像头 ${index + 1}`}
           </option>
         ))}
       </select>
       <button type="button" className="secondary" onClick={onRefresh} disabled={loading}>
-        {loading ? '检测中...' : '刷新'}
+        {loading ? '检测中...' : '授权/刷新'}
       </button>
       {error && <span className="inline-error">{error}</span>}
+      <span className="camera-help">如果 iPhone 没出现，请保持 iPhone 解锁并靠近 Mac，点“授权/刷新”；也可先试“系统默认摄像头”。</span>
     </section>
   );
 }
