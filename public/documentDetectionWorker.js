@@ -1,5 +1,5 @@
 /* global importScripts, cv */
-const OPENCV_CDN_URL = 'https://docs.opencv.org/4.8.0/opencv.js';
+const OPENCV_URL = './opencv.js';
 const MIN_DOCUMENT_AREA_RATIO = 0.15;
 
 let cvReadyPromise = null;
@@ -38,7 +38,7 @@ function loadOpenCV() {
     }
 
     try {
-      importScripts(OPENCV_CDN_URL);
+      importScripts(OPENCV_URL);
       const candidate = self.cv || (typeof cv !== 'undefined' ? cv : null);
       if (candidate) {
         const previousInitialized = candidate.onRuntimeInitialized;
