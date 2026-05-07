@@ -64,12 +64,22 @@ button.secondary {
 }
 button.secondary:hover:not(:disabled) { background: #e2e8f0; }
 
-.inline-error, .camera-help {
+.inline-error, .camera-help, .camera-active, .camera-debug {
   grid-column: 1 / -1;
   font-size: 13px;
 }
 .inline-error { color: #b42318; }
 .camera-help { color: #667085; }
+.camera-active { color: #027a48; font-weight: 700; }
+.camera-debug {
+  color: #667085;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.camera-debug summary { cursor: pointer; font-weight: 700; }
+.camera-debug ul { margin: 8px 0 0; padding-left: 18px; }
 
 .alert, .notice {
   margin: 0 0 16px;

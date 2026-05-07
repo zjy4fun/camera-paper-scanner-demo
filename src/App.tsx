@@ -32,7 +32,7 @@ export default function App() {
     refreshDevices,
   } = useCameraDevices();
 
-  const { stream, error: streamError } = useCameraStream(selectedDeviceId);
+  const { stream, error: streamError, activeCameraLabel, activeCameraSettings } = useCameraStream(selectedDeviceId);
   const { quad, status: detectionStatus, debugText, captureImage } = useDocumentDetection(videoRef, overlayCanvasRef, Boolean(stream));
 
   function handleCapture() {
@@ -74,6 +74,8 @@ export default function App() {
           selectedDeviceId={selectedDeviceId}
           loading={loading}
           error={devicesError}
+          activeCameraLabel={activeCameraLabel}
+          activeCameraSettings={activeCameraSettings}
           onChange={setSelectedDeviceId}
           onRefresh={refreshDevices}
         />
